@@ -1,14 +1,11 @@
 
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider
-from fastapi import FastAPI, Form, HTTPException, Query
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, date
-from typing import List, Optional, Dict
+from datetime import date
+from typing import List
 from pydantic import BaseModel
 
 # --- DATA & CONSTANTS (from Calcul et simulation.py) ---
@@ -64,7 +61,7 @@ meteo_prevision["revenu_estime"] = (
 )
 
 
-app = FastAPI(title="Dashboard Énergie - Mission Équipe 3")
+app = FastAPI(title="Dashboard Production - Mission Équipe 3")
 
 # Simple dashboard with only charts at root
 @app.get("/", response_class=HTMLResponse)
@@ -84,32 +81,79 @@ async def root():
 
 	# Revenu chart
 	fig_rev = px.line(df, x="date", y="revenu", title="Revenu Journalier (€)")
-	fig_rev.update_layout(height=350)
+	fig_rev.update_layout(height=320)
 	rev_html = fig_rev.to_html(full_html=False, include_plotlyjs=False)
 
+	# Taux de charge chart
+	fig_taux = px.line(df, x="date", y="taux_charge", title="Taux de charge (%)")
+	fig_taux.update_layout(height=320)
+	taux_html = fig_taux.to_html(full_html=False, include_plotlyjs=False)
+
+	# Simulation chart (prévision)
+	fig_sim = go.Figure()
+	fig_sim.add_trace(go.Bar(x=meteo_prevision["date_prevision"], y=meteo_prevision["production_estimee_mwh"], name="Production estimée (MWh)", marker_color="#2ca02c"))
+	fig_sim.add_trace(go.Bar(x=meteo_prevision["date_prevision"], y=meteo_prevision["revenu_estime"], name="Revenu estimé (€)", marker_color="#1f77b4"))
+	fig_sim.update_layout(barmode='group', title="Simulation de production et revenu", height=320, xaxis_title="Date prévision", yaxis_title="Valeur")
+	sim_html = fig_sim.to_html(full_html=False, include_plotlyjs=False)
+
 	# Alertes chart (points sous/sur production)
-	seuil_bas = 3000
-	seuil_haut = 4500
+	seuil_bas = config["seuil_sous_prod"]
+	seuil_haut = config["seuil_sur_prod"]
 	alert_low = df[df["production_mwh"] < seuil_bas]
 	alert_high = df[df["production_mwh"] > seuil_haut]
 	fig_alert = go.Figure()
 	fig_alert.add_trace(go.Scatter(x=df["date"], y=df["production_mwh"], name="Production", line=dict(color='black')))
 	fig_alert.add_trace(go.Scatter(x=alert_low["date"], y=alert_low["production_mwh"], mode='markers', name="Sous-prod", marker=dict(color='red', size=10)))
-	fig_alert.add_trace(go.Scatter(x=alert_high["date"], y=alert_high["production_mwh"], mode='markers', name="Sur-prod", marker=dict(color='blue', size=10)))
+	fig_alert.add_trace(go.Scatter(x=alert_high["date"], y=alert_high["production_mwh"], mode='markers', name="Sur-prod", marker=dict(color='orange', size=10)))
 	fig_alert.add_hline(y=seuil_bas, line_dash="dash", line_color="red", annotation_text="Seuil Bas")
 	fig_alert.add_hline(y=seuil_haut, line_dash="dash", line_color="blue", annotation_text="Seuil Haut")
 	fig_alert.update_layout(title="Alertes Production", height=350, margin=dict(l=20, r=20, t=40, b=20))
 	alert_html = fig_alert.to_html(full_html=False, include_plotlyjs=False)
+	alertes = []
+	if not alert_low.empty:
+		for i, row in alert_low.iterrows():
+			alertes.append(f"{row['date'].date()} - Sous production {row['production_mwh']} MWh")
+	if not alert_high.empty:
+		for i, row in alert_high.iterrows():
+			alertes.append(f"{row['date'].date()} - Surproduction {row['production_mwh']} MWh")
+	alerte_banner = ""
+	if alertes:
+		alerte_items = "<br>".join(alertes)
+		alerte_banner = f"""
+		<div style='background:#ffe9e9;border:1px solid #ff7f7f;padding:10px;margin-bottom:14px;border-radius:6px;'>
+			<strong style='color:#b30000;'>⚠️ ALERTES DE SEUIL</strong>
+			<p style='margin:4px 0;'>{len(alertes)} dépassement(s) détecté(s) (seuil sous={seuil_bas}, seuil sur={seuil_haut}).</p>
+			<p style='margin:0;line-height:1.4;'>{alerte_items}</p>
+		</div>
+		"""
+	df_html = df.to_html(index=False, classes='table', border=1)
+	meteo_prevision_html = meteo_prevision.to_html(index=False, classes='table', border=1)
 
 	return f"""
 	<html>
-	<head><title>Dashboard Énergie</title></head>
+	<head>
+		<title>Dashboard Production</title>
+		<style>
+			.table {{ border-collapse: collapse; width: 100%; margin-bottom: 18px; }}
+			.table th, .table td {{ border: 1px solid #ccc; padding: 4px 6px; text-align: center; }}
+			.table th {{ background:#f1f1f1; }}
+		</style>
+	</head>
 	<body style='background:#f8f9fa;'>
-		<div style='max-width:1100px;margin:30px auto;'>
+		<div style='max-width:1100px;margin:30px auto;font-family:Arial,Helvetica,sans-serif;'>
+			<h1 style='text-align:center'>Dashboard Production</h1>
+			<p style='text-align:center; margin-bottom:24px;'>Voir tous les résultats merge : <a href='/merged-results'>/merged-results</a></p>
+			{alerte_banner}
 			<div>{prod_html}</div>
 			<div>{rend_html}</div>
 			<div>{rev_html}</div>
+			<div>{taux_html}</div>
+			<div>{sim_html}</div>
 			<div>{alert_html}</div>
+			<h2>Résultats du merge (production + météo historique)</h2>
+			<div style='overflow:auto; max-height:380px; border: 1px solid #ddd; background: white; padding: 10px;'>{df_html}</div>
+			<h2>Prévisions avec production estimée</h2>
+			<div style='overflow:auto; max-height:260px; border: 1px solid #ddd; background: white; padding: 10px;'>{meteo_prevision_html}</div>
 		</div>
 	</body>
 	</html>
@@ -195,93 +239,34 @@ async def get_dashboard(date_start: date, date_end: date):
 		"message": "Synthèse des données historiques prête pour l'affichage graphique"
 	}
 
-# --- Matplotlib DEMO functions from alertes.py & seuils.py & GRAPHIQUE.py ---
-def demo_matplotlib_alertes():
-	x = np.linspace(0, 4*np.pi, 500)
-	y = np.sin(x)
-	seuil_bas_init = -0.5
-	seuil_haut_init = 0.5
-	fig, ax = plt.subplots()
-	plt.subplots_adjust(bottom=0.3)
-	courbe, = ax.plot(x, y, 'b-', lw=2, label='Courbe')
-	ax.axhline(seuil_bas_init, color='r', linestyle='--', alpha=0.7, label='Seuil bas')
-	ax.axhline(seuil_haut_init, color='g', linestyle='--', alpha=0.7, label='Seuil haut')
-	ax.set_xlabel('x')
-	ax.set_ylabel('y')
-	ax.set_title('Alerte visuelle quand la courbe dépasse les seuils')
-	ax.legend()
-	ax.grid(True)
-	ax_seuil_bas = plt.axes([0.15, 0.15, 0.65, 0.03])
-	ax_seuil_haut = plt.axes([0.15, 0.1, 0.65, 0.03])
-	slider_bas = Slider(ax_seuil_bas, 'Seuil bas', -2, 2, valinit=seuil_bas_init, valstep=0.05)
-	slider_haut = Slider(ax_seuil_haut, 'Seuil haut', -2, 2, valinit=seuil_haut_init, valstep=0.05)
-	def mise_a_jour(val):
-		bas = slider_bas.val
-		haut = slider_haut.val
-		if bas >= haut:
-			haut = bas + 0.1
-			slider_haut.set_val(haut)
-		ax.clear()
-		ax.plot(x, y, 'b-', lw=2)
-		ax.axhline(bas, color='r', linestyle='--', alpha=0.7)
-		ax.axhline(haut, color='g', linestyle='--', alpha=0.7)
-		ax.set_xlabel('x')
-		ax.set_ylabel('y')
-		ax.set_title('Alerte visuelle quand la courbe dépasse les seuils')
-		ax.grid(True)
-		ax.legend(['Courbe', 'Seuil bas', 'Seuil haut'])
-		depasse_bas = y < bas
-		depasse_haut = y > haut
-		if np.any(depasse_bas) or np.any(depasse_haut):
-			x_depasse_bas = x[depasse_bas]
-			y_depasse_bas = y[depasse_bas]
-			x_depasse_haut = x[depasse_haut]
-			y_depasse_haut = y[depasse_haut]
-			ax.scatter(x_depasse_bas, y_depasse_bas, color='red', s=10, zorder=5)
-			ax.scatter(x_depasse_haut, y_depasse_haut, color='red', s=10, zorder=5)
-			alerte = "ALERTE : dépassement de seuil !"
-		else:
-			alerte = ""
-		ax.text(0.5, 0.95, alerte, transform=ax.transAxes, ha='center', color='red', fontsize=12, weight='bold')
-		fig.canvas.draw_idle()
-	slider_bas.on_changed(mise_a_jour)
-	slider_haut.on_changed(mise_a_jour)
-	plt.show()
-
-def demo_matplotlib_seuils():
-	x = np.linspace(0, 10, 500)
-	def calculer_courbe(seuil1, seuil2):
-		y = np.piecewise(x,
-						 [x < seuil1, (x >= seuil1) & (x <= seuil2), x > seuil2],
-						 [0, lambda x: (x - seuil1) / (seuil2 - seuil1), 1])
-		return y
-	seuil1_init = 2.0
-	seuil2_init = 7.0
-	fig, ax = plt.subplots()
-	plt.subplots_adjust(bottom=0.25)
-	y_init = calculer_courbe(seuil1_init, seuil2_init)
-	courbe, = ax.plot(x, y_init, lw=2)
-	ax.set_xlabel('x')
-	ax.set_ylabel('y')
-	ax.set_title('Courbe modifiable avec seuils')
-	ax.grid(True)
-	ax_seuil1 = plt.axes([0.15, 0.1, 0.65, 0.03])
-	ax_seuil2 = plt.axes([0.15, 0.05, 0.65, 0.03])
-	slider_seuil1 = Slider(ax_seuil1, 'Seuil 1', 0, 10, valinit=seuil1_init, valstep=0.1)
-	slider_seuil2 = Slider(ax_seuil2, 'Seuil 2', 0, 10, valinit=seuil2_init, valstep=0.1)
-	def mise_a_jour(val):
-		s1 = slider_seuil1.val
-		s2 = slider_seuil2.val
-		if s1 >= s2:
-			s2 = s1 + 0.1
-			slider_seuil2.set_val(s2)
-		y_new = calculer_courbe(s1, s2)
-		courbe.set_ydata(y_new)
-		fig.canvas.draw_idle()
-	slider_seuil1.on_changed(mise_a_jour)
-	slider_seuil2.on_changed(mise_a_jour)
-	plt.show()
+@app.get("/merged-results", response_class=HTMLResponse, tags=["Dashboard"])
+async def merged_results():
+	df_html = df.to_html(index=False, classes='table', border=1)
+	meteo_prevision_html = meteo_prevision.to_html(index=False, classes='table', border=1)
+	return f"""
+	<html>
+	<head>
+		<title>Résultats Merge</title>
+		<style>
+			.table {{ border-collapse: collapse; width: 100%; margin-bottom: 18px; }}
+			.table th, .table td {{ border: 1px solid #ccc; padding: 4px 6px; text-align: center; }}
+			.table th {{ background:#f1f1f1; }}
+		</style>
+	</head>
+	<body style='background:#f8f9fa;'>
+		<div style='max-width:1100px;margin:30px auto;font-family:Arial,Helvetica,sans-serif;'>
+			<h1>Résultats des fichiers merge</h1>
+			<p>Voici toutes les lignes du DataFrame fusionné:</p>
+			<h2>Merge production + météo historique</h2>
+			<div style='overflow:auto; max-height:380px; border:1px solid #ddd; background:white; padding:8px;'>{df_html}</div>
+			<h2>Prévision de production estimée</h2>
+			<div style='overflow:auto; max-height:260px; border:1px solid #ddd; background:white; padding:8px;'>{meteo_prevision_html}</div>
+			<p><a href='/'>Retour au dashboard</a></p>
+		</div>
+	</body>
+	</html>
+	"""
 
 if __name__ == "__main__":
 	import uvicorn
-	uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+	uvicorn.run("dashboard_v1:app", host="127.0.0.1", port=8000, reload=True)
